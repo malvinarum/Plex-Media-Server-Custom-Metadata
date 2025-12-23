@@ -24,6 +24,8 @@ export default {
 
         // Spotify Search
         const searchParams = new URLSearchParams({ q: query, type: 'track', limit: '1' });
+        
+        // FIXED: Real Spotify API Endpoint
         const spotifyRes = await fetch(`https://api.spotify.com/v1/search?${searchParams}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -86,7 +88,7 @@ export default {
       if (path === '/api/metadata/book') {
         if (!query) return json({ found: false });
 
-        // Using GOOGLE_BOOKS_API_KEY based on your Cloudflare dashboard screenshot
+        // Using GOOGLE_BOOKS_API_KEY to match your Cloudflare dashboard
         const booksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&key=${env.GOOGLE_BOOKS_API_KEY}&maxResults=1`);
         const data = await booksRes.json();
         const result = data.items?.[0]?.volumeInfo;
@@ -131,6 +133,7 @@ async function getSpotifyToken(env) {
   try {
     const auth = btoa(`${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`);
     
+    // FIXED: Real Spotify Token Endpoint
     const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
       method: 'POST',
       headers: {
