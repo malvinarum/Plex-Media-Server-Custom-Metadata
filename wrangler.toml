@@ -1,0 +1,7 @@
+name = "plexrpc-api"
+main = "worker.js"
+compatibility_date = "2023-10-25"
+
+# Note: Your secrets are managed in the Cloudflare Dashboard 
+# or via 'wrangler secret put'. 
+# They do NOT go in this file.
