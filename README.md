@@ -1,16 +1,16 @@
-# PlexRPC API (Cloudflare Worker)
+# Plex Custom Metadata Agent (Cloudflare Worker)
 
-The official serverless backend service for **[PlexRPC](https://github.com/malvinarum/Plex-Rich-Presence)**.
+A lightweight, serverless metadata provider for **Plex Media Server** (Beta).
 
-This Cloudflare Worker acts as a secure middleware between the PlexRPC Windows client and various third-party metadata APIs (Spotify, TMDB, Google Books). It secures API keys server-side and provides a unified endpoint for rich metadata with zero latency.
+This Cloudflare Worker replaces the need for local python agents by acting as a bridge between Plex and third-party APIs (Spotify, TMDB, Google Books). It provides zero-latency search and metadata matching for Movies, Music, and Audiobooks.
 
 ## 🚀 Features
 
-* **🎵 Music Metadata:** Authenticates with **Spotify** (Client Credentials Flow) to fetch high-res album art and track links.
-* **🎬 Movie/TV Metadata:** Queries **TMDB** for movie posters and show details.
-* **📖 Audiobook Metadata:** Searches **Google Books** for cover art and author info.
-* **🔐 Security:** Keeps all sensitive API keys (Spotify Secret, TMDB Key, etc.) in Cloudflare's secure vault, keeping the client "configless" and secure.
-* **⚙️ Dynamic Config:** Serves global configuration (like the Discord App ID) to allow client updates without re-compiling.
+* **🎬 Movie Metadata:** Queries **TMDB** for high-resolution posters, cast lists, directors, and MPAA ratings.
+* **🎵 Music Metadata:** Authenticates with **Spotify** to fetch album art, tracklists, and artist info.
+* **📖 Audiobook Metadata:** Queries **Google Books** to fetch covers, author info, and summaries (mapped as Artist/Album for Plex compatibility).
+* **🔐 Security:** Keeps sensitive API keys (Spotify Secret, TMDB Key) in Cloudflare's secure vault.
+* **⚡ Serverless:** Runs on Cloudflare's edge network.
 
 ## 🛠️ Prerequisites
 
@@ -34,44 +34,46 @@ This Cloudflare Worker acts as a secure middleware between the PlexRPC Windows c
     ```
 
 3.  **Configure Secrets:**
-    You must set the following secrets in your Cloudflare Dashboard (under **Settings -> Variables**) or via the CLI:
+    Set the following secrets in your Cloudflare Dashboard (under **Settings -> Variables**) or via the CLI:
     * `SPOTIFY_CLIENT_ID`
     * `SPOTIFY_CLIENT_SECRET`
     * `TMDB_API_KEY`
     * `GOOGLE_BOOKS_API_KEY`
-    * `DISCORD_CLIENT_ID`
 
     *To set them via CLI:*
     ```bash
-    wrangler secret put SPOTIFY_CLIENT_ID
+    wrangler secret put TMDB_API_KEY
     # (Repeat for all keys)
     ```
 
-4.  **Deploy to Production:**
+4.  **Deploy:**
     ```bash
     wrangler deploy
     ```
 
+## ⚙️ Configuration in Plex
+
+To use this worker as your metadata source:
+
+1.  Ensure you are running a Plex Media Server version that supports **Custom Metadata Agents**.
+2.  Navigate to your Library settings (e.g., "Movies" or "Music/Audiobooks" -> "Edit" -> "Advanced").
+3.  Scroll to **Metadata Agent** or **Agent Settings**.
+4.  Select **Custom Metadata Provider**.
+5.  Enter your Worker's base URL + `/plex` for the provider URL:
+    ```text
+    https://<your-worker-name>.<your-subdomain>.workers.dev/plex
+    ```
+6.  Save changes and Refresh Metadata.
+
 ## 📡 API Endpoints
 
-### Metadata Lookups
-* `GET /api/metadata/music?q={query}` - Returns Spotify track info & art.
-* `GET /api/metadata/movie?q={query}` - Returns TMDB movie poster.
-* `GET /api/metadata/tv?q={query}` - Returns TMDB TV show poster.
-* `GET /api/metadata/book?q={query}` - Returns Google Books cover.
+This worker exposes the standard Plex Custom Metadata interface:
 
-### Configuration
-* `GET /api/config/discord-id` - Returns the active Discord Client ID.
+* `GET /plex/search?query={name}&year={year}&type={movie|artist|album}`
+    * Returns a list of matches from TMDB (Movies), Spotify (Music), or Google Books (Audiobooks).
+* `GET /plex/metadata?id={guid}`
+    * Accepts a GUID (e.g., `tmdb-movie-123` or `google-book-xyz`) and returns the full JSON metadata.
 
 ## 📜 License
 
 This project is open-source. Feel free to fork, modify, and distribute.
-
-## Disclaimer
-
-**PlexRPC** is a community-developed, open-source project. It is **not** affiliated, associated, authorized, endorsed by, or in any way officially connected with **Plex, Inc.**, **Discord Inc.**, or any of their subsidiaries or affiliates.
-
-* The official Plex website can be found at [https://www.plex.tv](https://www.plex.tv).
-* The official Discord website can be found at [https://discord.com](https://discord.com).
-
-The names "Plex", "Discord", as well as related names, marks, emblems, and images are registered trademarks of their respective owners. This application is intended for personal, non-commercial use only.
