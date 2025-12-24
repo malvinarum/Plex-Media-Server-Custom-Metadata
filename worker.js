@@ -18,12 +18,11 @@ export default {
       // 🎬 PLEX META AGENT ROUTES
       // =================================================================================
 
-      // 1. SEARCH: Plex asks "What matches 'The Matrix'?"
-      // Endpoint: /plex/search?query=Name&year=2023&type=movie
+      // 1. SEARCH: Plex asks "What matches 'The Martian'?"
       if (path === '/plex/search') {
         const query = params.get('query');
         const year = params.get('year');
-        const type = params.get('type'); // 'movie', 'show', 'artist', 'album'
+        const type = params.get('type'); // 'movie', 'artist', 'album' (Plex uses 'album' for audiobooks usually)
 
         if (!query) return json({ error: "Missing query" }, 400);
 
@@ -45,15 +44,15 @@ export default {
 
         // --- SEARCH MUSIC (Spotify) ---
         else if (type === 'artist' || type === 'album') {
+          // 1. Try Spotify first
           const token = await getSpotifyToken(env);
           if (token) {
-            // Defaulting to album search for this example context
-            const spotifyRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=album&limit=5`, {
+            const spotifyRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=album&limit=3`, {
               headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await spotifyRes.json();
             
-            matches = (data.albums?.items || []).map(a => ({
+            const spotMatches = (data.albums?.items || []).map(a => ({
               id: `spotify-album-${a.id}`,
               title: a.name,
               year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
@@ -61,19 +60,37 @@ export default {
               type: 'album',
               artist: a.artists[0]?.name
             }));
+            matches.push(...spotMatches);
           }
+
+          // 2. Try Google Books (For Audiobooks)
+          // We search if the type is album/book, appending results
+          const booksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&key=${env.GOOGLE_BOOKS_API_KEY}&maxResults=3`);
+          const bookData = await booksRes.json();
+
+          const bookMatches = (bookData.items || []).map(b => {
+             const info = b.volumeInfo;
+             return {
+               id: `google-book-${b.id}`,
+               title: info.title,
+               year: info.publishedDate ? parseInt(info.publishedDate.split('-')[0]) : null,
+               thumb: info.imageLinks?.thumbnail?.replace('http://', 'https://'),
+               type: 'album', // Masquerade as album for Plex
+               artist: info.authors ? info.authors[0] : 'Unknown Author'
+             };
+          });
+          matches.push(...bookMatches);
         }
 
         return json({ media: matches });
       }
 
-      // 2. METADATA: Plex asks "Give me details for ID 'tmdb-movie-123'"
-      // Endpoint: /plex/metadata?id=tmdb-movie-123
+      // 2. METADATA: Plex asks "Give me details for ID 'google-book-xyz'"
       if (path === '/plex/metadata') {
         const id = params.get('id');
         if (!id) return json({ error: "Missing ID" }, 400);
 
-        // --- FETCH MOVIE DETAILS ---
+        // --- FETCH MOVIE DETAILS (TMDB) ---
         if (id.startsWith('tmdb-movie-')) {
           const tmdbId = id.replace('tmdb-movie-', '');
           const tmdbRes = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,releases`);
@@ -99,7 +116,7 @@ export default {
           return json({ metadata });
         }
 
-        // --- FETCH ALBUM DETAILS ---
+        // --- FETCH ALBUM DETAILS (Spotify) ---
         if (id.startsWith('spotify-album-')) {
           const spotifyId = id.replace('spotify-album-', '');
           const token = await getSpotifyToken(env);
@@ -128,6 +145,30 @@ export default {
           return json({ metadata });
         }
 
+        // --- FETCH BOOK DETAILS (Google Books) ---
+        if (id.startsWith('google-book-')) {
+          const bookId = id.replace('google-book-', '');
+          const bookRes = await fetch(`https://www.googleapis.com/books/v1/volumes/${bookId}?key=${env.GOOGLE_BOOKS_API_KEY}`);
+          const b = await bookRes.json();
+          const info = b.volumeInfo;
+
+          const metadata = {
+            id: id,
+            title: info.title,
+            artist: info.authors ? info.authors[0] : 'Unknown', // Maps to Artist
+            year: info.publishedDate ? parseInt(info.publishedDate.split('-')[0]) : null,
+            originally_available_at: info.publishedDate,
+            summary: info.description ? info.description.replace(/<[^>]*>?/gm, '') : '', // Strip HTML from Google Books desc
+            poster: info.imageLinks?.thumbnail?.replace('http://', 'https://'), // Force HTTPS
+            studio: info.publisher,
+            genres: info.categories || [],
+            // Google Books doesn't give tracks, so we just return metadata
+            tracks: [] 
+          };
+
+          return json({ metadata });
+        }
+
         return json({ error: "Unknown ID format" }, 404);
       }
 
@@ -141,39 +182,26 @@ export default {
 
 // --- HELPERS ---
 
-// Helper to extract US rating from TMDB response
 function getTmdbRating(releases) {
   const us = releases?.countries?.find(c => c.iso_3166_1 === 'US');
   return us ? us.certification : null;
 }
 
-// Spotify Token Logic
 let cachedToken = null;
 let tokenExpiresAt = 0;
-
 async function getSpotifyToken(env) {
   if (cachedToken && Date.now() < tokenExpiresAt - 300000) return cachedToken;
-
   try {
     const auth = btoa(`${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`);
     const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
       method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'grant_type=client_credentials'
     });
-
     if (!tokenRes.ok) throw new Error('Failed to fetch token');
-
     const data = await tokenRes.json();
     cachedToken = data.access_token;
     tokenExpiresAt = Date.now() + (data.expires_in * 1000);
-    
     return cachedToken;
-  } catch (error) {
-    console.error("Spotify Auth Failed:", error);
-    return null;
-  }
+  } catch (error) { return null; }
 }
