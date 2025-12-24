@@ -4,7 +4,6 @@ export default {
     const path = url.pathname;
     const params = url.searchParams;
 
-    // Common Headers
     const jsonHeaders = {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
@@ -13,149 +12,155 @@ export default {
     const json = (data, status = 200) => 
       new Response(JSON.stringify(data), { status, headers: jsonHeaders });
 
-    try {
-      // =================================================================================
-      // 🏥 AGENT MANIFEST (Health Check)
-      // =================================================================================
-      if (path === '/') {
-        return json({
-          name: "Pleiades Metadata",
+    // -------------------------------------------------------------------------
+    // 1. ROOT (Health Check)
+    // -------------------------------------------------------------------------
+    // Plex calls this to validate the provider. Must return a MediaContainer.
+    if (path === '/') {
+      return json({
+        MediaContainer: {
+          size: 0,
           identifier: "com.pleiades.metadata",
+          name: "Pleiades Metadata",
           version: "1.0.0",
-          types: ["movie", "show", "artist", "album"]
-        });
-      }
+          types: "movie,show,artist,album" // Comma-separated string or array
+        }
+      });
+    }
 
-      // =================================================================================
-      // 🎬 SEARCH (Unchanged - returns simple list for matching)
-      // =================================================================================
+    try {
+      // -------------------------------------------------------------------------
+      // 2. SEARCH
+      // -------------------------------------------------------------------------
       if (path === '/search' || path === '/plex/search') {
-        // ... (Keep your existing search logic from the previous version here) ...
-        // I am omitting the full search block for brevity, but YOU MUST KEEP IT.
-        // It is identical to the previous working version.
-        
-        // --- COPY THE SEARCH BLOCK FROM THE PREVIOUS STEP HERE ---
         const query = params.get('query');
         const year = params.get('year');
         const type = params.get('type'); 
-        if (!query) return json({ error: "Missing query" }, 400);
+
+        if (!query) return json({ MediaContainer: { size: 0, identifier: "com.pleiades.metadata", Metadata: [] } });
 
         let matches = [];
-        
-        // (Brief Logic Recap for Context)
+
+        // --- TV SHOWS (TMDB) ---
         if (type === 'show' || type === 'tv') {
            const tmdbRes = await fetch(`https://api.themoviedb.org/3/search/tv?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&include_adult=false&year=${year || ''}`);
            const data = await tmdbRes.json();
+           
            matches = (data.results || []).slice(0, 5).map(m => ({
-             id: `tmdb-show-${m.id}`,
+             guid: `tmdb-show-${m.id}`,
+             type: "show",
              title: m.name,
              year: m.first_air_date ? parseInt(m.first_air_date.split('-')[0]) : null,
              thumb: m.poster_path ? `https://image.tmdb.org/t/p/w200${m.poster_path}` : null,
-             type: 'show'
            }));
-        } else if (type === 'movie') {
+        }
+
+        // --- MOVIES (TMDB) ---
+        else if (type === 'movie') {
           const tmdbRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&include_adult=false&year=${year || ''}`);
           const data = await tmdbRes.json();
+          
           matches = (data.results || []).slice(0, 5).map(m => ({
-            id: `tmdb-movie-${m.id}`,
+            guid: `tmdb-movie-${m.id}`,
+            type: "movie",
             title: m.title,
             year: m.release_date ? parseInt(m.release_date.split('-')[0]) : null,
             thumb: m.poster_path ? `https://image.tmdb.org/t/p/w200${m.poster_path}` : null,
-            type: 'movie'
           }));
-        } else if (type === 'artist' || type === 'album') {
-             // ... (Keep existing Spotify/Book logic) ...
-             const token = await getSpotifyToken(env);
-             if (token) {
-                const spotifyRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=album&limit=3`, { headers: { 'Authorization': `Bearer ${token}` } });
-                const data = await spotifyRes.json();
-                matches.push(...(data.albums?.items || []).map(a => ({
-                  id: `spotify-album-${a.id}`,
-                  title: a.name,
-                  year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
-                  thumb: a.images[0]?.url,
-                  type: 'album',
-                  artist: a.artists[0]?.name
-                })));
-             }
-             // ... (Keep Google Books logic) ...
-             const booksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&key=${env.GOOGLE_BOOKS_API_KEY}&maxResults=3`);
-             const bookData = await booksRes.json();
-             matches.push(...(bookData.items || []).map(b => ({
-               id: `google-book-${b.id}`,
-               title: b.volumeInfo.title,
-               year: b.volumeInfo.publishedDate ? parseInt(b.volumeInfo.publishedDate.split('-')[0]) : null,
-               thumb: b.volumeInfo.imageLinks?.thumbnail?.replace('http://', 'https://'),
-               type: 'album',
-               artist: b.volumeInfo.authors ? b.volumeInfo.authors[0] : 'Unknown'
-             })));
         }
-        return json({ media: matches });
+
+        // --- MUSIC/BOOKS (Spotify + Google Books) ---
+        else if (type === 'artist' || type === 'album') {
+          // Spotify
+          const token = await getSpotifyToken(env);
+          if (token) {
+            const spotifyRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=album&limit=3`, { headers: { 'Authorization': `Bearer ${token}` } });
+            const data = await spotifyRes.json();
+            matches.push(...(data.albums?.items || []).map(a => ({
+              guid: `spotify-album-${a.id}`,
+              type: "album",
+              title: a.name,
+              year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
+              thumb: a.images[0]?.url,
+            })));
+          }
+          
+          // Google Books
+          const booksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&key=${env.GOOGLE_BOOKS_API_KEY}&maxResults=3`);
+          const bookData = await booksRes.json();
+          matches.push(...(bookData.items || []).map(b => ({
+             guid: `google-book-${b.id}`,
+             type: "album",
+             title: b.volumeInfo.title,
+             year: b.volumeInfo.publishedDate ? parseInt(b.volumeInfo.publishedDate.split('-')[0]) : null,
+             thumb: b.volumeInfo.imageLinks?.thumbnail?.replace('http://', 'https://'),
+          })));
+        }
+
+        return json({
+          MediaContainer: {
+            size: matches.length,
+            identifier: "com.pleiades.metadata",
+            Metadata: matches
+          }
+        });
       }
 
-      // =================================================================================
-      // 📄 METADATA (Updated to Plex MediaContainer Schema)
-      // =================================================================================
+      // -------------------------------------------------------------------------
+      // 3. METADATA
+      // -------------------------------------------------------------------------
       if (path === '/metadata' || path === '/plex/metadata') {
         const id = params.get('id');
         if (!id) return json({ error: "Missing ID" }, 400);
 
         let meta = null;
 
-        // --- 📺 TV SHOWS (TMDB) ---
+        // --- TV ---
         if (id.startsWith('tmdb-show-')) {
           const tmdbId = id.replace('tmdb-show-', '');
-          // Added 'external_ids' and 'similar' to fetch
           const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,content_ratings,external_ids,similar`);
           const s = await res.json();
-          
           meta = formatTmdbShow(s, id);
         }
 
-        // --- 🎬 MOVIES (TMDB) ---
+        // --- MOVIE ---
         else if (id.startsWith('tmdb-movie-')) {
           const tmdbId = id.replace('tmdb-movie-', '');
           const res = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,releases,external_ids,similar`);
           const m = await res.json();
-          
           meta = formatTmdbMovie(m, id);
         }
 
-        // --- 🎵 MUSIC (Spotify) ---
+        // --- ALBUM ---
         else if (id.startsWith('spotify-album-')) {
           const spotifyId = id.replace('spotify-album-', '');
           const token = await getSpotifyToken(env);
           const res = await fetch(`https://api.spotify.com/v1/albums/${spotifyId}`, { headers: { 'Authorization': `Bearer ${token}` } });
           const a = await res.json();
-
           meta = formatSpotifyAlbum(a, id);
         }
 
-        // --- 📖 BOOKS (Google) ---
+        // --- BOOK ---
         else if (id.startsWith('google-book-')) {
           const bookId = id.replace('google-book-', '');
           const res = await fetch(`https://www.googleapis.com/books/v1/volumes/${bookId}?key=${env.GOOGLE_BOOKS_API_KEY}`);
           const b = await res.json();
-
           meta = formatGoogleBook(b, id);
         }
 
         if (meta) {
-          // Wrap in MediaContainer
           return json({
             MediaContainer: {
-              offset: 0,
-              totalSize: 1,
-              identifier: "com.pleiades.metadata",
               size: 1,
+              identifier: "com.pleiades.metadata",
               Metadata: [ meta ]
             }
           });
         }
-
-        return json({ error: "Unknown ID or Not Found" }, 404);
+        
+        return json({ MediaContainer: { size: 0, identifier: "com.pleiades.metadata", Metadata: [] } });
       }
-      
+
       return json({ error: "Not Found" }, 404);
 
     } catch (error) {
@@ -165,7 +170,7 @@ export default {
 };
 
 // =================================================================================
-// 🛠️ FORMATTING HELPERS (The heavy lifting)
+// 🛠️ FORMATTING HELPERS
 // =================================================================================
 
 function formatTmdbMovie(m, guid) {
@@ -173,7 +178,7 @@ function formatTmdbMovie(m, guid) {
   const rating = m.releases?.countries?.find(c => c.iso_3166_1 === 'US')?.certification || 'NR';
   
   return {
-    guid: guid, // Plex treats this as the unique ID
+    guid: guid,
     type: "movie",
     title: m.title,
     originalTitle: m.original_title,
@@ -181,13 +186,12 @@ function formatTmdbMovie(m, guid) {
     tagline: m.tagline,
     year: year,
     originallyAvailableAt: m.release_date,
-    duration: m.runtime ? m.runtime * 60 * 1000 : null, // ms
+    duration: m.runtime ? m.runtime * 60 * 1000 : null,
     contentRating: rating,
     studio: m.production_companies?.[0]?.name,
     thumb: m.poster_path ? `https://image.tmdb.org/t/p/original${m.poster_path}` : null,
     art: m.backdrop_path ? `https://image.tmdb.org/t/p/original${m.backdrop_path}` : null,
     
-    // Arrays
     Genre: m.genres?.map(g => ({ tag: g.name })) || [],
     Studio: m.production_companies?.map(c => ({ tag: c.name })) || [],
     Country: m.production_countries?.map(c => ({ tag: c.name })) || [],
@@ -269,7 +273,7 @@ function formatTmdbShow(s, guid) {
 function formatSpotifyAlbum(a, guid) {
   return {
     guid: guid,
-    type: "album", // or "artist" depending on context, but usually album
+    type: "album",
     title: a.name,
     summary: `Album by ${a.artists.map(ar => ar.name).join(', ')}. ${a.total_tracks} tracks.`,
     year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
@@ -277,7 +281,7 @@ function formatSpotifyAlbum(a, guid) {
     studio: a.label,
     thumb: a.images[0]?.url,
     
-    Genre: a.genres?.map(g => ({ tag: g })) || [], // Spotify albums rarely have genres directly, artists do
+    Genre: a.genres?.map(g => ({ tag: g })) || [],
     Role: a.artists.map((ar, i) => ({
       tag: ar.name,
       role: 'Artist',
@@ -294,7 +298,7 @@ function formatGoogleBook(b, guid) {
   const info = b.volumeInfo;
   return {
     guid: guid,
-    type: "album", // Masquerading as album for Plex Audiobook support
+    type: "album", 
     title: info.title,
     summary: info.description ? info.description.replace(/<[^>]*>?/gm, '') : '',
     year: info.publishedDate ? parseInt(info.publishedDate.split('-')[0]) : null,
