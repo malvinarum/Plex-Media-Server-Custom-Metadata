@@ -4,7 +4,6 @@ export default {
     const path = url.pathname;
     const params = url.searchParams;
 
-    // Standard headers
     const jsonHeaders = {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
@@ -14,19 +13,18 @@ export default {
       new Response(JSON.stringify(data), { status, headers: jsonHeaders });
 
     // -------------------------------------------------------------------------
-    // 1. ROOT MANIFEST (The "Handshake")
+    // 1. ROOT MANIFEST (The Handshake)
     // -------------------------------------------------------------------------
-    // FIX 1: Must return "MediaProvider" object, NOT "MediaContainer"
-    // FIX 2: Identifier MUST start with "tv.plex.agents.custom."
+    // FIX: Must return "MediaProvider", NOT "MediaContainer"
     if (path === '/') {
-      const AGENT_ID = "tv.plex.agents.custom.pleiades"; // Valid ID format
+      const AGENT_ID = "tv.plex.agents.custom.pleiades"; // Must start with tv.plex.agents.custom.
 
       return json({
         MediaProvider: {
           identifier: AGENT_ID,
           title: "Pleiades Metadata",
           version: "1.0.0",
-          // FIX 3: Types must be an array of objects with integer types and schemes
+          // FIX: Types must be an array of objects with integer types and schemes
           Types: [
             { type: 1, Scheme: [{ scheme: AGENT_ID }] }, // Movie
             { type: 2, Scheme: [{ scheme: AGENT_ID }] }, // Show
@@ -35,10 +33,11 @@ export default {
             { type: 8, Scheme: [{ scheme: AGENT_ID }] }, // Artist
             { type: 9, Scheme: [{ scheme: AGENT_ID }] }  // Album
           ],
+          // FIX: Feature keys point to your worker paths
           Feature: [
             { type: "search", key: "/search" },
             { type: "metadata", key: "/metadata" },
-            { type: "match", key: "/search" } // Match often reuses search logic
+            { type: "match", key: "/search" } 
           ]
         }
       });
@@ -51,12 +50,10 @@ export default {
       // 2. SEARCH & MATCH
       // -------------------------------------------------------------------------
       if (path === '/search' || path === '/plex/search') {
-        const query = params.get('query') || params.get('title'); // 'match' uses title
+        const query = params.get('query') || params.get('title'); 
         const year = params.get('year');
         const typeStr = params.get('type'); 
         
-        // Plex sends type as integer (1, 2) or string ('movie', 'show')
-        // We normalize to string for internal logic
         let type = 'unknown';
         if (typeStr == '1' || typeStr == 'movie') type = 'movie';
         else if (typeStr == '2' || typeStr == 'show') type = 'show';
@@ -75,7 +72,7 @@ export default {
            const data = await tmdbRes.json();
            
            matches = (data.results || []).slice(0, 5).map(m => ({
-             guid: `${AGENT_ID}://show/tmdb-show-${m.id}`, // Custom GUID format
+             guid: `${AGENT_ID}://show/tmdb-show-${m.id}`,
              type: "show",
              title: m.name,
              year: m.first_air_date ? parseInt(m.first_air_date.split('-')[0]) : null,
@@ -116,7 +113,7 @@ export default {
           const booksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&key=${env.GOOGLE_BOOKS_API_KEY}&maxResults=3`);
           const bookData = await booksRes.json();
           matches.push(...(bookData.items || []).map(b => ({
-             guid: `${AGENT_ID}://album/google-book-${b.id}`, // Treat as album for Plex
+             guid: `${AGENT_ID}://album/google-book-${b.id}`,
              type: "album",
              title: b.volumeInfo.title,
              year: b.volumeInfo.publishedDate ? parseInt(b.volumeInfo.publishedDate.split('-')[0]) : null,
@@ -137,15 +134,11 @@ export default {
       // 3. METADATA
       // -------------------------------------------------------------------------
       if (path === '/metadata' || path === '/plex/metadata') {
-        // Plex requests: /metadata/tv.plex.agents.custom.pleiades://movie/tmdb-movie-123
-        // Or sometimes just passes 'ratingKey' param depending on call style.
-        // We need to handle parsing the ID carefully.
-        
         let id = params.get('ratingKey') || params.get('id') || params.get('guid');
         
-        // If ID comes in as a full URI (e.g. scheme://type/id), strip it
+        // Strip scheme if present (e.g. tv.plex.agents.custom...://movie/tmdb-movie-123 -> tmdb-movie-123)
         if (id && id.includes('://')) {
-            id = id.split('/').pop(); // Gets 'tmdb-movie-123'
+            id = id.split('/').pop();
         }
 
         if (!id) return json({ error: "Missing ID" }, 400);
