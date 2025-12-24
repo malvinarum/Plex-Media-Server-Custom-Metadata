@@ -15,11 +15,16 @@ export default {
 
     try {
       // =================================================================================
-      // 🏥 HEALTH CHECK (New)
+      // 🏥 AGENT MANIFEST (Health Check)
       // =================================================================================
-      // Fixes "URL Not Reachable" by responding to the root ping
+      // Fixes "Provider identifier is not valid" by declaring capabilities
       if (path === '/') {
-        return json({ status: "online", agent: "Plex Custom Metadata", version: "1.0.0" });
+        return json({
+          name: "Pleiades Metadata",
+          identifier: "com.pleiades.metadata", // 👈 This is the key fix
+          version: "1.0.0",
+          types: ["movie", "show", "artist", "album"] // Tells Plex what libraries to use this for
+        });
       }
 
       // =================================================================================
@@ -27,8 +32,6 @@ export default {
       // =================================================================================
 
       // 1. SEARCH
-      // Endpoint: /search?query=Name...
-      // Removed '/plex' prefix to work with custom domains
       if (path === '/search' || path === '/plex/search') {
         const query = params.get('query');
         const year = params.get('year');
@@ -107,7 +110,6 @@ export default {
       }
 
       // 2. METADATA
-      // Endpoint: /metadata?id=...
       if (path === '/metadata' || path === '/plex/metadata') {
         const id = params.get('id');
         if (!id) return json({ error: "Missing ID" }, 400);
