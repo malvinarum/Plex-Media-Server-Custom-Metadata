@@ -15,25 +15,22 @@ export default {
     // -------------------------------------------------------------------------
     // 1. ROOT MANIFEST (The Handshake)
     // -------------------------------------------------------------------------
-    // FIX: Must return "MediaProvider", NOT "MediaContainer"
     if (path === '/') {
-      const AGENT_ID = "tv.plex.agents.custom.pleiades"; // Must start with tv.plex.agents.custom.
+      const AGENT_ID = "tv.plex.agents.custom.pleiades";
 
       return json({
         MediaProvider: {
           identifier: AGENT_ID,
           title: "Pleiades Metadata",
           version: "1.0.0",
-          // FIX: Types must be an array of objects with integer types and schemes
+          // 🚨 CRITICAL FIX: Only advertise types 1, 2, 3, 4. 
+          // Including 8 (Artist) or 9 (Album) causes "Unsupported metadata types" error.
           Types: [
             { type: 1, Scheme: [{ scheme: AGENT_ID }] }, // Movie
             { type: 2, Scheme: [{ scheme: AGENT_ID }] }, // Show
             { type: 3, Scheme: [{ scheme: AGENT_ID }] }, // Season
-            { type: 4, Scheme: [{ scheme: AGENT_ID }] }, // Episode
-            { type: 8, Scheme: [{ scheme: AGENT_ID }] }, // Artist
-            { type: 9, Scheme: [{ scheme: AGENT_ID }] }  // Album
+            { type: 4, Scheme: [{ scheme: AGENT_ID }] }  // Episode
           ],
-          // FIX: Feature keys point to your worker paths
           Feature: [
             { type: "search", key: "/search" },
             { type: "metadata", key: "/metadata" },
@@ -54,9 +51,11 @@ export default {
         const year = params.get('year');
         const typeStr = params.get('type'); 
         
+        // Normalize type
         let type = 'unknown';
         if (typeStr == '1' || typeStr == 'movie') type = 'movie';
         else if (typeStr == '2' || typeStr == 'show') type = 'show';
+        // (Music types are hidden from manifest but logic preserved here)
         else if (typeStr == '8' || typeStr == 'artist') type = 'artist';
         else if (typeStr == '9' || typeStr == 'album') type = 'album';
 
@@ -94,33 +93,6 @@ export default {
            }));
         }
 
-        // --- MUSIC/BOOKS ---
-        else if (type === 'artist' || type === 'album') {
-          const token = await getSpotifyToken(env);
-          if (token) {
-            const spotifyRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=album&limit=3`, { headers: { 'Authorization': `Bearer ${token}` } });
-            const data = await spotifyRes.json();
-            matches.push(...(data.albums?.items || []).map(a => ({
-              guid: `${AGENT_ID}://album/spotify-album-${a.id}`,
-              type: "album",
-              title: a.name,
-              year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
-              thumb: a.images[0]?.url,
-            })));
-          }
-          
-          // Google Books
-          const booksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&key=${env.GOOGLE_BOOKS_API_KEY}&maxResults=3`);
-          const bookData = await booksRes.json();
-          matches.push(...(bookData.items || []).map(b => ({
-             guid: `${AGENT_ID}://album/google-book-${b.id}`,
-             type: "album",
-             title: b.volumeInfo.title,
-             year: b.volumeInfo.publishedDate ? parseInt(b.volumeInfo.publishedDate.split('-')[0]) : null,
-             thumb: b.volumeInfo.imageLinks?.thumbnail?.replace('http://', 'https://'),
-          })));
-        }
-
         return json({
           MediaContainer: {
             size: matches.length,
@@ -136,7 +108,6 @@ export default {
       if (path === '/metadata' || path === '/plex/metadata') {
         let id = params.get('ratingKey') || params.get('id') || params.get('guid');
         
-        // Strip scheme if present (e.g. tv.plex.agents.custom...://movie/tmdb-movie-123 -> tmdb-movie-123)
         if (id && id.includes('://')) {
             id = id.split('/').pop();
         }
@@ -159,23 +130,6 @@ export default {
           const res = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,releases,external_ids,similar`);
           const m = await res.json();
           meta = formatTmdbMovie(m, id, AGENT_ID);
-        }
-
-        // --- ALBUM ---
-        else if (id.startsWith('spotify-album-')) {
-          const spotifyId = id.replace('spotify-album-', '');
-          const token = await getSpotifyToken(env);
-          const res = await fetch(`https://api.spotify.com/v1/albums/${spotifyId}`, { headers: { 'Authorization': `Bearer ${token}` } });
-          const a = await res.json();
-          meta = formatSpotifyAlbum(a, id, AGENT_ID);
-        }
-
-        // --- BOOK ---
-        else if (id.startsWith('google-book-')) {
-          const bookId = id.replace('google-book-', '');
-          const res = await fetch(`https://www.googleapis.com/books/v1/volumes/${bookId}?key=${env.GOOGLE_BOOKS_API_KEY}`);
-          const b = await res.json();
-          meta = formatGoogleBook(b, id, AGENT_ID);
         }
 
         if (meta) {
@@ -263,46 +217,8 @@ function formatTmdbShow(s, key, agentId) {
   };
 }
 
-function formatSpotifyAlbum(a, key, agentId) {
-  return {
-    ratingKey: key,
-    key: `/metadata?id=${key}`,
-    guid: `${agentId}://album/${key}`,
-    type: "album",
-    title: a.name,
-    summary: `Album by ${a.artists[0]?.name}. ${a.total_tracks} tracks.`,
-    year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
-    originallyAvailableAt: a.release_date,
-    studio: a.label,
-    thumb: a.images[0]?.url,
-    Genre: a.genres?.map(g => ({ tag: g })) || [],
-    Role: a.artists.map((ar, i) => ({ tag: ar.name, role: 'Artist', order: i + 1 })),
-    Image: [{ type: "coverPoster", url: a.images[0]?.url }].filter(i => i.url)
-  };
-}
-
-function formatGoogleBook(b, key, agentId) {
-  const info = b.volumeInfo;
-  return {
-    ratingKey: key,
-    key: `/metadata?id=${key}`,
-    guid: `${agentId}://album/${key}`,
-    type: "album", // Mapped to Album for Plex
-    title: info.title,
-    summary: info.description ? info.description.replace(/<[^>]*>?/gm, '') : '',
-    year: info.publishedDate ? parseInt(info.publishedDate.split('-')[0]) : null,
-    originallyAvailableAt: info.publishedDate,
-    studio: info.publisher,
-    thumb: info.imageLinks?.thumbnail?.replace('http://', 'https://'),
-    Role: info.authors?.map((author, i) => ({ tag: author, role: 'Author', order: i + 1 })) || [],
-    Image: [{ type: "coverPoster", url: info.imageLinks?.thumbnail?.replace('http://', 'https://') }].filter(i => i.url)
-  };
-}
-
-// Keep existing getSpotifyToken...
-let cachedToken = null;
-let tokenExpiresAt = 0;
 async function getSpotifyToken(env) {
+  // Kept in case you enable Music later or use it for other logic
   if (cachedToken && Date.now() < tokenExpiresAt - 300000) return cachedToken;
   try {
     const auth = btoa(`${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`);
@@ -318,3 +234,5 @@ async function getSpotifyToken(env) {
     return cachedToken;
   } catch (error) { return null; }
 }
+let cachedToken = null;
+let tokenExpiresAt = 0;
