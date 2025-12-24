@@ -4,6 +4,7 @@ export default {
     const path = url.pathname;
     const params = url.searchParams;
 
+    // Standard headers
     const jsonHeaders = {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
@@ -15,54 +16,66 @@ export default {
     // -------------------------------------------------------------------------
     // 1. ROOT MANIFEST (The "Handshake")
     // -------------------------------------------------------------------------
+    // FIX 1: Must return "MediaProvider" object, NOT "MediaContainer"
+    // FIX 2: Identifier MUST start with "tv.plex.agents.custom."
     if (path === '/') {
+      const AGENT_ID = "tv.plex.agents.custom.pleiades"; // Valid ID format
+
       return json({
-        MediaContainer: {
-          size: 0,
-          // CHANGE: 'identifier' -> 'providerId'
-          // CHANGE: Use a unique ID, NOT 'tv.plex.provider.metadata'
-          providerId: "com.pleiades.metadata", 
+        MediaProvider: {
+          identifier: AGENT_ID,
           title: "Pleiades Metadata",
           version: "1.0.0",
-          types: "movie,show,artist,album", 
+          // FIX 3: Types must be an array of objects with integer types and schemes
+          Types: [
+            { type: 1, Scheme: [{ scheme: AGENT_ID }] }, // Movie
+            { type: 2, Scheme: [{ scheme: AGENT_ID }] }, // Show
+            { type: 3, Scheme: [{ scheme: AGENT_ID }] }, // Season
+            { type: 4, Scheme: [{ scheme: AGENT_ID }] }, // Episode
+            { type: 8, Scheme: [{ scheme: AGENT_ID }] }, // Artist
+            { type: 9, Scheme: [{ scheme: AGENT_ID }] }  // Album
+          ],
           Feature: [
-            { type: "search" },
-            { type: "metadata" },
-            { type: "match" } 
+            { type: "search", key: "/search" },
+            { type: "metadata", key: "/metadata" },
+            { type: "match", key: "/search" } // Match often reuses search logic
           ]
         }
       });
     }
 
     try {
+      const AGENT_ID = "tv.plex.agents.custom.pleiades";
+
       // -------------------------------------------------------------------------
-      // 2. SEARCH
+      // 2. SEARCH & MATCH
       // -------------------------------------------------------------------------
       if (path === '/search' || path === '/plex/search') {
-        const query = params.get('query');
+        const query = params.get('query') || params.get('title'); // 'match' uses title
         const year = params.get('year');
-        const type = params.get('type'); 
+        const typeStr = params.get('type'); 
+        
+        // Plex sends type as integer (1, 2) or string ('movie', 'show')
+        // We normalize to string for internal logic
+        let type = 'unknown';
+        if (typeStr == '1' || typeStr == 'movie') type = 'movie';
+        else if (typeStr == '2' || typeStr == 'show') type = 'show';
+        else if (typeStr == '8' || typeStr == 'artist') type = 'artist';
+        else if (typeStr == '9' || typeStr == 'album') type = 'album';
 
         if (!query) {
-          return json({ 
-            MediaContainer: { 
-              size: 0, 
-              totalSize: 0,
-              providerId: "com.pleiades.metadata", 
-              Metadata: [] 
-            } 
-          });
+          return json({ MediaContainer: { size: 0, identifier: AGENT_ID, Metadata: [] } });
         }
 
         let matches = [];
 
-        // --- TV SHOWS (TMDB) ---
-        if (type === 'show' || type === 'tv') {
+        // --- TV SHOWS ---
+        if (type === 'show') {
            const tmdbRes = await fetch(`https://api.themoviedb.org/3/search/tv?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&include_adult=false&year=${year || ''}`);
            const data = await tmdbRes.json();
            
            matches = (data.results || []).slice(0, 5).map(m => ({
-             guid: `tmdb-show-${m.id}`,
+             guid: `${AGENT_ID}://show/tmdb-show-${m.id}`, // Custom GUID format
              type: "show",
              title: m.name,
              year: m.first_air_date ? parseInt(m.first_air_date.split('-')[0]) : null,
@@ -70,13 +83,13 @@ export default {
            }));
         }
 
-        // --- MOVIES (TMDB) ---
+        // --- MOVIES ---
         else if (type === 'movie') {
           const tmdbRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&include_adult=false&year=${year || ''}`);
           const data = await tmdbRes.json();
           
           matches = (data.results || []).slice(0, 5).map(m => ({
-            guid: `tmdb-movie-${m.id}`,
+            guid: `${AGENT_ID}://movie/tmdb-movie-${m.id}`,
             type: "movie",
             title: m.title,
             year: m.release_date ? parseInt(m.release_date.split('-')[0]) : null,
@@ -84,15 +97,14 @@ export default {
            }));
         }
 
-        // --- MUSIC/BOOKS (Spotify + Google Books) ---
+        // --- MUSIC/BOOKS ---
         else if (type === 'artist' || type === 'album') {
-          // Spotify
           const token = await getSpotifyToken(env);
           if (token) {
             const spotifyRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=album&limit=3`, { headers: { 'Authorization': `Bearer ${token}` } });
             const data = await spotifyRes.json();
             matches.push(...(data.albums?.items || []).map(a => ({
-              guid: `spotify-album-${a.id}`,
+              guid: `${AGENT_ID}://album/spotify-album-${a.id}`,
               type: "album",
               title: a.name,
               year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
@@ -104,7 +116,7 @@ export default {
           const booksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&key=${env.GOOGLE_BOOKS_API_KEY}&maxResults=3`);
           const bookData = await booksRes.json();
           matches.push(...(bookData.items || []).map(b => ({
-             guid: `google-book-${b.id}`,
+             guid: `${AGENT_ID}://album/google-book-${b.id}`, // Treat as album for Plex
              type: "album",
              title: b.volumeInfo.title,
              year: b.volumeInfo.publishedDate ? parseInt(b.volumeInfo.publishedDate.split('-')[0]) : null,
@@ -115,8 +127,7 @@ export default {
         return json({
           MediaContainer: {
             size: matches.length,
-            totalSize: matches.length,
-            providerId: "com.pleiades.metadata",
+            identifier: AGENT_ID,
             Metadata: matches
           }
         });
@@ -126,7 +137,17 @@ export default {
       // 3. METADATA
       // -------------------------------------------------------------------------
       if (path === '/metadata' || path === '/plex/metadata') {
-        const id = params.get('id');
+        // Plex requests: /metadata/tv.plex.agents.custom.pleiades://movie/tmdb-movie-123
+        // Or sometimes just passes 'ratingKey' param depending on call style.
+        // We need to handle parsing the ID carefully.
+        
+        let id = params.get('ratingKey') || params.get('id') || params.get('guid');
+        
+        // If ID comes in as a full URI (e.g. scheme://type/id), strip it
+        if (id && id.includes('://')) {
+            id = id.split('/').pop(); // Gets 'tmdb-movie-123'
+        }
+
         if (!id) return json({ error: "Missing ID" }, 400);
 
         let meta = null;
@@ -136,7 +157,7 @@ export default {
           const tmdbId = id.replace('tmdb-show-', '');
           const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,content_ratings,external_ids,similar`);
           const s = await res.json();
-          meta = formatTmdbShow(s, id);
+          meta = formatTmdbShow(s, id, AGENT_ID);
         }
 
         // --- MOVIE ---
@@ -144,7 +165,7 @@ export default {
           const tmdbId = id.replace('tmdb-movie-', '');
           const res = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,releases,external_ids,similar`);
           const m = await res.json();
-          meta = formatTmdbMovie(m, id);
+          meta = formatTmdbMovie(m, id, AGENT_ID);
         }
 
         // --- ALBUM ---
@@ -153,7 +174,7 @@ export default {
           const token = await getSpotifyToken(env);
           const res = await fetch(`https://api.spotify.com/v1/albums/${spotifyId}`, { headers: { 'Authorization': `Bearer ${token}` } });
           const a = await res.json();
-          meta = formatSpotifyAlbum(a, id);
+          meta = formatSpotifyAlbum(a, id, AGENT_ID);
         }
 
         // --- BOOK ---
@@ -161,28 +182,20 @@ export default {
           const bookId = id.replace('google-book-', '');
           const res = await fetch(`https://www.googleapis.com/books/v1/volumes/${bookId}?key=${env.GOOGLE_BOOKS_API_KEY}`);
           const b = await res.json();
-          meta = formatGoogleBook(b, id);
+          meta = formatGoogleBook(b, id, AGENT_ID);
         }
 
         if (meta) {
           return json({
             MediaContainer: {
               size: 1,
-              totalSize: 1,
-              providerId: "com.pleiades.metadata",
+              identifier: AGENT_ID,
               Metadata: [ meta ]
             }
           });
         }
         
-        return json({ 
-          MediaContainer: { 
-            size: 0, 
-            totalSize: 0,
-            providerId: "com.pleiades.metadata", 
-            Metadata: [] 
-          } 
-        });
+        return json({ MediaContainer: { size: 0, identifier: AGENT_ID, Metadata: [] } });
       }
 
       return json({ error: "Not Found" }, 404);
@@ -194,15 +207,17 @@ export default {
 };
 
 // =================================================================================
-// 🛠️ HELPERS (Formatting logic)
+// 🛠️ HELPERS
 // =================================================================================
 
-function formatTmdbMovie(m, guid) {
+function formatTmdbMovie(m, key, agentId) {
   const year = m.release_date ? parseInt(m.release_date.split('-')[0]) : null;
   const rating = m.releases?.countries?.find(c => c.iso_3166_1 === 'US')?.certification || 'NR';
   
   return {
-    guid: guid,
+    ratingKey: key,
+    key: `/metadata?id=${key}`,
+    guid: `${agentId}://movie/${key}`,
     type: "movie",
     title: m.title,
     originalTitle: m.original_title,
@@ -219,34 +234,9 @@ function formatTmdbMovie(m, guid) {
     Genre: m.genres?.map(g => ({ tag: g.name })) || [],
     Studio: m.production_companies?.map(c => ({ tag: c.name })) || [],
     Country: m.production_countries?.map(c => ({ tag: c.name })) || [],
-    
-    Rating: [
-      { type: "audience", value: m.vote_average, image: "themoviedb://image.rating" }
-    ],
-    
-    Guid: [
-      { id: `tmdb://${m.id}` },
-      m.external_ids?.imdb_id ? { id: `imdb://${m.external_ids.imdb_id}` } : null
-    ].filter(Boolean),
-
-    Role: m.credits?.cast?.slice(0, 15).map((c, index) => ({
-      tag: c.name,
-      role: c.character,
-      thumb: c.profile_path ? `https://image.tmdb.org/t/p/w200${c.profile_path}` : null,
-      order: index + 1
-    })) || [],
-
-    Director: m.credits?.crew?.filter(c => c.job === 'Director').map(d => ({
-      tag: d.name,
-      role: 'Director',
-      thumb: d.profile_path ? `https://image.tmdb.org/t/p/w200${d.profile_path}` : null
-    })) || [],
-
-    Writer: m.credits?.crew?.filter(c => c.department === 'Writing').slice(0, 3).map(w => ({
-      tag: w.name,
-      role: 'Writer'
-    })) || [],
-
+    Rating: [{ image: "themoviedb://image.rating", type: "audience", value: m.vote_average }],
+    Role: m.credits?.cast?.slice(0, 15).map((c, i) => ({ tag: c.name, role: c.character, thumb: c.profile_path ? `https://image.tmdb.org/t/p/w200${c.profile_path}` : null, order: i+1 })) || [],
+    Director: m.credits?.crew?.filter(c => c.job === 'Director').map(d => ({ tag: d.name, role: 'Director' })) || [],
     Image: [
       { type: "coverPoster", url: m.poster_path ? `https://image.tmdb.org/t/p/original${m.poster_path}` : null },
       { type: "background", url: m.backdrop_path ? `https://image.tmdb.org/t/p/original${m.backdrop_path}` : null }
@@ -254,15 +244,16 @@ function formatTmdbMovie(m, guid) {
   };
 }
 
-function formatTmdbShow(s, guid) {
+function formatTmdbShow(s, key, agentId) {
   const year = s.first_air_date ? parseInt(s.first_air_date.split('-')[0]) : null;
   const rating = s.content_ratings?.results?.find(r => r.iso_3166_1 === 'US')?.rating || 'NR';
 
   return {
-    guid: guid,
+    ratingKey: key,
+    key: `/metadata?id=${key}`,
+    guid: `${agentId}://show/${key}`,
     type: "show",
     title: s.name,
-    originalTitle: s.original_name,
     summary: s.overview,
     year: year,
     originallyAvailableAt: s.first_air_date,
@@ -270,79 +261,52 @@ function formatTmdbShow(s, guid) {
     studio: s.production_companies?.[0]?.name,
     thumb: s.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null,
     art: s.backdrop_path ? `https://image.tmdb.org/t/p/original${s.backdrop_path}` : null,
-
     Genre: s.genres?.map(g => ({ tag: g.name })) || [],
-    Studio: s.production_companies?.map(c => ({ tag: c.name })) || [],
-    Country: s.production_countries?.map(c => ({ tag: c.name })) || [],
-    
-    Rating: [
-      { type: "audience", value: s.vote_average, image: "themoviedb://image.rating" }
-    ],
-
-    Guid: [
-      { id: `tmdb://${s.id}` },
-      s.external_ids?.imdb_id ? { id: `imdb://${s.external_ids.imdb_id}` } : null,
-      s.external_ids?.tvdb_id ? { id: `tvdb://${s.external_ids.tvdb_id}` } : null
-    ].filter(Boolean),
-
-    Role: s.credits?.cast?.slice(0, 15).map((c, index) => ({
-      tag: c.name,
-      role: c.character,
-      thumb: c.profile_path ? `https://image.tmdb.org/t/p/w200${c.profile_path}` : null,
-      order: index + 1
-    })) || []
-  };
-}
-
-function formatSpotifyAlbum(a, guid) {
-  return {
-    guid: guid,
-    type: "album",
-    title: a.name,
-    summary: `Album by ${a.artists.map(ar => ar.name).join(', ')}. ${a.total_tracks} tracks.`,
-    year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
-    originallyAvailableAt: a.release_date,
-    studio: a.label,
-    thumb: a.images[0]?.url,
-    
-    Genre: a.genres?.map(g => ({ tag: g })) || [],
-    Role: a.artists.map((ar, i) => ({
-      tag: ar.name,
-      role: 'Artist',
-      order: i + 1
-    })),
-    
+    Role: s.credits?.cast?.slice(0, 15).map((c, i) => ({ tag: c.name, role: c.character, order: i+1 })) || [],
     Image: [
-      { type: "coverPoster", url: a.images[0]?.url }
+      { type: "coverPoster", url: s.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null },
+      { type: "background", url: s.backdrop_path ? `https://image.tmdb.org/t/p/original${s.backdrop_path}` : null }
     ].filter(i => i.url)
   };
 }
 
-function formatGoogleBook(b, guid) {
+function formatSpotifyAlbum(a, key, agentId) {
+  return {
+    ratingKey: key,
+    key: `/metadata?id=${key}`,
+    guid: `${agentId}://album/${key}`,
+    type: "album",
+    title: a.name,
+    summary: `Album by ${a.artists[0]?.name}. ${a.total_tracks} tracks.`,
+    year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
+    originallyAvailableAt: a.release_date,
+    studio: a.label,
+    thumb: a.images[0]?.url,
+    Genre: a.genres?.map(g => ({ tag: g })) || [],
+    Role: a.artists.map((ar, i) => ({ tag: ar.name, role: 'Artist', order: i + 1 })),
+    Image: [{ type: "coverPoster", url: a.images[0]?.url }].filter(i => i.url)
+  };
+}
+
+function formatGoogleBook(b, key, agentId) {
   const info = b.volumeInfo;
   return {
-    guid: guid,
-    type: "album", 
+    ratingKey: key,
+    key: `/metadata?id=${key}`,
+    guid: `${agentId}://album/${key}`,
+    type: "album", // Mapped to Album for Plex
     title: info.title,
     summary: info.description ? info.description.replace(/<[^>]*>?/gm, '') : '',
     year: info.publishedDate ? parseInt(info.publishedDate.split('-')[0]) : null,
     originallyAvailableAt: info.publishedDate,
     studio: info.publisher,
     thumb: info.imageLinks?.thumbnail?.replace('http://', 'https://'),
-    
-    Genre: info.categories?.map(c => ({ tag: c })) || [],
-    Role: info.authors?.map((author, i) => ({
-      tag: author,
-      role: 'Author',
-      order: i + 1
-    })) || [],
-
-    Image: [
-      { type: "coverPoster", url: info.imageLinks?.thumbnail?.replace('http://', 'https://') }
-    ].filter(i => i.url)
+    Role: info.authors?.map((author, i) => ({ tag: author, role: 'Author', order: i + 1 })) || [],
+    Image: [{ type: "coverPoster", url: info.imageLinks?.thumbnail?.replace('http://', 'https://') }].filter(i => i.url)
   };
 }
 
+// Keep existing getSpotifyToken...
 let cachedToken = null;
 let tokenExpiresAt = 0;
 async function getSpotifyToken(env) {
