@@ -4,6 +4,7 @@ export default {
     const path = url.pathname;
     const params = url.searchParams;
 
+    // Common Headers
     const jsonHeaders = {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
@@ -13,30 +14,36 @@ export default {
       new Response(JSON.stringify(data), { status, headers: jsonHeaders });
 
     // -------------------------------------------------------------------------
-    // 1. ROOT (Health Check)
+    // 1. ROOT MANIFEST (The "Handshake")
     // -------------------------------------------------------------------------
-    // Plex calls this to validate the provider. Must return a MediaContainer.
+    // This defines the provider. Plex calls this to validate the URL.
     if (path === '/') {
       return json({
         MediaContainer: {
           size: 0,
           identifier: "com.pleiades.metadata",
-          name: "Pleiades Metadata",
+          title: "Pleiades Metadata",  // Required (was 'name' previously)
           version: "1.0.0",
-          types: "movie,show,artist,album" // Comma-separated string or array
+          types: "movie,show,artist,album", // Comma-separated supported types
+          Feature: [  // Required: Defines what this agent can do
+            { type: "search" },
+            { type: "metadata" },
+            { type: "match" } 
+          ]
         }
       });
     }
 
     try {
       // -------------------------------------------------------------------------
-      // 2. SEARCH
+      // 2. SEARCH (Returns list of candidates)
       // -------------------------------------------------------------------------
       if (path === '/search' || path === '/plex/search') {
         const query = params.get('query');
         const year = params.get('year');
         const type = params.get('type'); 
 
+        // Return empty container if no query
         if (!query) return json({ MediaContainer: { size: 0, identifier: "com.pleiades.metadata", Metadata: [] } });
 
         let matches = [];
@@ -66,7 +73,7 @@ export default {
             title: m.title,
             year: m.release_date ? parseInt(m.release_date.split('-')[0]) : null,
             thumb: m.poster_path ? `https://image.tmdb.org/t/p/w200${m.poster_path}` : null,
-          }));
+           }));
         }
 
         // --- MUSIC/BOOKS (Spotify + Google Books) ---
@@ -107,7 +114,7 @@ export default {
       }
 
       // -------------------------------------------------------------------------
-      // 3. METADATA
+      // 3. METADATA (Returns Full Details)
       // -------------------------------------------------------------------------
       if (path === '/metadata' || path === '/plex/metadata') {
         const id = params.get('id');
@@ -170,7 +177,7 @@ export default {
 };
 
 // =================================================================================
-// 🛠️ FORMATTING HELPERS
+// 🛠️ HELPERS (Formatting logic)
 // =================================================================================
 
 function formatTmdbMovie(m, guid) {
@@ -319,7 +326,6 @@ function formatGoogleBook(b, guid) {
   };
 }
 
-// --- HELPERS (Token logic remains unchanged) ---
 let cachedToken = null;
 let tokenExpiresAt = 0;
 async function getSpotifyToken(env) {
