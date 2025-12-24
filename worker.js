@@ -4,7 +4,6 @@ export default {
     const path = url.pathname;
     const params = url.searchParams;
 
-    // Common Headers
     const jsonHeaders = {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
@@ -16,16 +15,17 @@ export default {
     // -------------------------------------------------------------------------
     // 1. ROOT MANIFEST (The "Handshake")
     // -------------------------------------------------------------------------
-    // This defines the provider. Plex calls this to validate the URL.
     if (path === '/') {
       return json({
         MediaContainer: {
           size: 0,
-          identifier: "com.pleiades.metadata",
-          title: "Pleiades Metadata",  // Required (was 'name' previously)
+          // CRITICAL FIX: Must use the official system identifier format
+          identifier: "tv.plex.provider.metadata", 
+          title: "Pleiades Metadata",
           version: "1.0.0",
-          types: "movie,show,artist,album", // Comma-separated supported types
-          Feature: [  // Required: Defines what this agent can do
+          protocols: "stream", 
+          types: "movie,show,artist,album", 
+          Feature: [
             { type: "search" },
             { type: "metadata" },
             { type: "match" } 
@@ -36,15 +36,23 @@ export default {
 
     try {
       // -------------------------------------------------------------------------
-      // 2. SEARCH (Returns list of candidates)
+      // 2. SEARCH
       // -------------------------------------------------------------------------
       if (path === '/search' || path === '/plex/search') {
         const query = params.get('query');
         const year = params.get('year');
         const type = params.get('type'); 
 
-        // Return empty container if no query
-        if (!query) return json({ MediaContainer: { size: 0, identifier: "com.pleiades.metadata", Metadata: [] } });
+        if (!query) {
+          return json({ 
+            MediaContainer: { 
+              size: 0, 
+              totalSize: 0,
+              identifier: "tv.plex.provider.metadata", 
+              Metadata: [] 
+            } 
+          });
+        }
 
         let matches = [];
 
@@ -107,14 +115,15 @@ export default {
         return json({
           MediaContainer: {
             size: matches.length,
-            identifier: "com.pleiades.metadata",
+            totalSize: matches.length,
+            identifier: "tv.plex.provider.metadata",
             Metadata: matches
           }
         });
       }
 
       // -------------------------------------------------------------------------
-      // 3. METADATA (Returns Full Details)
+      // 3. METADATA
       // -------------------------------------------------------------------------
       if (path === '/metadata' || path === '/plex/metadata') {
         const id = params.get('id');
@@ -159,13 +168,21 @@ export default {
           return json({
             MediaContainer: {
               size: 1,
-              identifier: "com.pleiades.metadata",
+              totalSize: 1,
+              identifier: "tv.plex.provider.metadata",
               Metadata: [ meta ]
             }
           });
         }
         
-        return json({ MediaContainer: { size: 0, identifier: "com.pleiades.metadata", Metadata: [] } });
+        return json({ 
+          MediaContainer: { 
+            size: 0, 
+            totalSize: 0,
+            identifier: "tv.plex.provider.metadata", 
+            Metadata: [] 
+          } 
+        });
       }
 
       return json({ error: "Not Found" }, 404);
@@ -177,7 +194,7 @@ export default {
 };
 
 // =================================================================================
-// 🛠️ HELPERS (Formatting logic)
+// 🛠️ HELPERS
 // =================================================================================
 
 function formatTmdbMovie(m, guid) {
