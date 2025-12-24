@@ -15,49 +15,15 @@ export default {
 
     try {
       // =================================================================================
-      // 🔌 EXISTING PLEXRPC ROUTES (Unchanged)
-      // =================================================================================
-      
-      // ... (Keep your existing routes /api/metadata/music, /movie, /tv, /book here) ...
-      // I have preserved the logic below for the new Plex integration, utilizing the same helpers.
-
-      if (path === '/api/metadata/music') {
-        const query = params.get('q');
-        if (!query) return json({ error: "No query" }, 400);
-        const token = await getSpotifyToken(env);
-        if (!token) return json({ error: "Spotify Unavailable" }, 500);
-        
-        const spotifyRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&limit=1`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        const data = await spotifyRes.json();
-        const track = data.tracks?.items?.[0];
-        if (track) {
-          return json({
-            found: true,
-            title: track.name,
-            artist: track.artists[0].name,
-            album: track.album.name,
-            image: track.album.images[0]?.url,
-            url: track.external_urls.spotify
-          });
-        }
-        return json({ found: false });
-      }
-
-      // ... (Include your other existing handlers for /movie, /tv, /book similarly) ...
-
-
-      // =================================================================================
-      // 🎬 NEW PLEX META AGENT ROUTES
+      // 🎬 PLEX META AGENT ROUTES
       // =================================================================================
 
       // 1. SEARCH: Plex asks "What matches 'The Matrix'?"
       // Endpoint: /plex/search?query=Name&year=2023&type=movie
       if (path === '/plex/search') {
         const query = params.get('query');
-        const year = params.get('year'); // Optional but helpful
-        const type = params.get('type'); // 'movie', 'show', 'artist'
+        const year = params.get('year');
+        const type = params.get('type'); // 'movie', 'show', 'artist', 'album'
 
         if (!query) return json({ error: "Missing query" }, 400);
 
@@ -69,7 +35,7 @@ export default {
           const data = await tmdbRes.json();
           
           matches = (data.results || []).slice(0, 5).map(m => ({
-            id: `tmdb-movie-${m.id}`, // Custom GUID we can parse later
+            id: `tmdb-movie-${m.id}`,
             title: m.title,
             year: m.release_date ? parseInt(m.release_date.split('-')[0]) : null,
             thumb: m.poster_path ? `https://image.tmdb.org/t/p/w200${m.poster_path}` : null,
@@ -81,7 +47,7 @@ export default {
         else if (type === 'artist' || type === 'album') {
           const token = await getSpotifyToken(env);
           if (token) {
-            // Searching for an Album as an example
+            // Defaulting to album search for this example context
             const spotifyRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=album&limit=5`, {
               headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -113,8 +79,6 @@ export default {
           const tmdbRes = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,releases`);
           const m = await tmdbRes.json();
 
-          // Map to Plex Metadata Standard (JSON)
-          // Note: Verify these exact keys against the beta docs provided in your link
           const metadata = {
             id: id,
             title: m.title,
@@ -126,7 +90,7 @@ export default {
             poster: m.poster_path ? `https://image.tmdb.org/t/p/original${m.poster_path}` : null,
             art: m.backdrop_path ? `https://image.tmdb.org/t/p/original${m.backdrop_path}` : null,
             rating: m.vote_average,
-            content_rating: getTmdbRating(m.releases), // Helper needed for MPAA rating
+            content_rating: getTmdbRating(m.releases),
             genres: m.genres?.map(g => g.name) || [],
             roles: m.credits?.cast?.slice(0, 10).map(c => ({ name: c.name, role: c.character, thumb: c.profile_path ? `https://image.tmdb.org/t/p/w200${c.profile_path}` : null })) || [],
             directors: m.credits?.crew?.filter(c => c.job === 'Director').map(d => ({ name: d.name })) || []
@@ -183,22 +147,33 @@ function getTmdbRating(releases) {
   return us ? us.certification : null;
 }
 
-// Keep your existing getSpotifyToken function exactly as is...
+// Spotify Token Logic
 let cachedToken = null;
 let tokenExpiresAt = 0;
+
 async function getSpotifyToken(env) {
   if (cachedToken && Date.now() < tokenExpiresAt - 300000) return cachedToken;
+
   try {
     const auth = btoa(`${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`);
     const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
       method: 'POST',
-      headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
       body: 'grant_type=client_credentials'
     });
+
     if (!tokenRes.ok) throw new Error('Failed to fetch token');
+
     const data = await tokenRes.json();
     cachedToken = data.access_token;
     tokenExpiresAt = Date.now() + (data.expires_in * 1000);
+    
     return cachedToken;
-  } catch (error) { return null; }
+  } catch (error) {
+    console.error("Spotify Auth Failed:", error);
+    return null;
+  }
 }
