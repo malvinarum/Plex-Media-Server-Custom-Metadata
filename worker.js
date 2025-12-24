@@ -18,18 +18,33 @@ export default {
       // 🎬 PLEX META AGENT ROUTES
       // =================================================================================
 
-      // 1. SEARCH: Plex asks "What matches 'The Martian'?"
+      // 1. SEARCH: Plex asks "What matches 'The Office'?"
       if (path === '/plex/search') {
         const query = params.get('query');
         const year = params.get('year');
-        const type = params.get('type'); // 'movie', 'artist', 'album' (Plex uses 'album' for audiobooks usually)
+        const type = params.get('type'); // 'movie', 'show', 'artist', 'album'
 
         if (!query) return json({ error: "Missing query" }, 400);
 
         let matches = [];
 
-        // --- SEARCH MOVIES (TMDB) ---
-        if (type === 'movie') {
+        // --- 📺 SEARCH TV SHOWS (TMDB) ---
+        // Added this block back so TV libraries work
+        if (type === 'show' || type === 'tv') {
+           const tmdbRes = await fetch(`https://api.themoviedb.org/3/search/tv?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&include_adult=false&year=${year || ''}`);
+           const data = await tmdbRes.json();
+           
+           matches = (data.results || []).slice(0, 5).map(m => ({
+             id: `tmdb-show-${m.id}`,
+             title: m.name,
+             year: m.first_air_date ? parseInt(m.first_air_date.split('-')[0]) : null,
+             thumb: m.poster_path ? `https://image.tmdb.org/t/p/w200${m.poster_path}` : null,
+             type: 'show'
+           }));
+        }
+
+        // --- 🎬 SEARCH MOVIES (TMDB) ---
+        else if (type === 'movie') {
           const tmdbRes = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&include_adult=false&year=${year || ''}`);
           const data = await tmdbRes.json();
           
@@ -42,7 +57,7 @@ export default {
           }));
         }
 
-        // --- SEARCH MUSIC (Spotify) ---
+        // --- 🎵 SEARCH MUSIC & BOOKS (Spotify + Google Books) ---
         else if (type === 'artist' || type === 'album') {
           // 1. Try Spotify first
           const token = await getSpotifyToken(env);
@@ -52,15 +67,14 @@ export default {
             });
             const data = await spotifyRes.json();
             
-            const spotMatches = (data.albums?.items || []).map(a => ({
+            matches.push(...(data.albums?.items || []).map(a => ({
               id: `spotify-album-${a.id}`,
               title: a.name,
               year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
               thumb: a.images[0]?.url,
               type: 'album',
               artist: a.artists[0]?.name
-            }));
-            matches.push(...spotMatches);
+            })));
           }
 
           // 2. Try Google Books (For Audiobooks)
@@ -68,7 +82,7 @@ export default {
           const booksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&key=${env.GOOGLE_BOOKS_API_KEY}&maxResults=3`);
           const bookData = await booksRes.json();
 
-          const bookMatches = (bookData.items || []).map(b => {
+          matches.push(...(bookData.items || []).map(b => {
              const info = b.volumeInfo;
              return {
                id: `google-book-${b.id}`,
@@ -78,45 +92,80 @@ export default {
                type: 'album', // Masquerade as album for Plex
                artist: info.authors ? info.authors[0] : 'Unknown Author'
              };
-          });
-          matches.push(...bookMatches);
+          }));
         }
 
         return json({ media: matches });
       }
 
-      // 2. METADATA: Plex asks "Give me details for ID 'google-book-xyz'"
+      // 2. METADATA: Plex asks "Give me details for ID 'tmdb-show-99'"
       if (path === '/plex/metadata') {
         const id = params.get('id');
         if (!id) return json({ error: "Missing ID" }, 400);
 
-        // --- FETCH MOVIE DETAILS (TMDB) ---
+        // --- 📺 FETCH TV DETAILS (TMDB) ---
+        if (id.startsWith('tmdb-show-')) {
+          const tmdbId = id.replace('tmdb-show-', '');
+          const tmdbRes = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,content_ratings`);
+          const s = await tmdbRes.json();
+
+          // Helper to get TV rating (e.g. TV-MA)
+          const rating = s.content_ratings?.results?.find(r => r.iso_3166_1 === 'US')?.rating;
+
+          return json({
+             metadata: {
+               id: id,
+               title: s.name,
+               original_title: s.original_name,
+               year: s.first_air_date ? parseInt(s.first_air_date.split('-')[0]) : null,
+               originally_available_at: s.first_air_date,
+               summary: s.overview,
+               studio: s.production_companies?.[0]?.name,
+               poster: s.poster_path ? `https://image.tmdb.org/t/p/original${s.poster_path}` : null,
+               art: s.backdrop_path ? `https://image.tmdb.org/t/p/original${s.backdrop_path}` : null,
+               rating: s.vote_average,
+               content_rating: rating,
+               genres: s.genres?.map(g => g.name) || [],
+               roles: s.credits?.cast?.slice(0, 10).map(c => ({ 
+                 name: c.name, 
+                 role: c.character, 
+                 thumb: c.profile_path ? `https://image.tmdb.org/t/p/w200${c.profile_path}` : null 
+               })) || []
+             }
+          });
+        }
+
+        // --- 🎬 FETCH MOVIE DETAILS (TMDB) ---
         if (id.startsWith('tmdb-movie-')) {
           const tmdbId = id.replace('tmdb-movie-', '');
           const tmdbRes = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,releases`);
           const m = await tmdbRes.json();
 
-          const metadata = {
-            id: id,
-            title: m.title,
-            original_title: m.original_title,
-            year: m.release_date ? parseInt(m.release_date.split('-')[0]) : null,
-            originally_available_at: m.release_date,
-            summary: m.overview,
-            studio: m.production_companies?.[0]?.name,
-            poster: m.poster_path ? `https://image.tmdb.org/t/p/original${m.poster_path}` : null,
-            art: m.backdrop_path ? `https://image.tmdb.org/t/p/original${m.backdrop_path}` : null,
-            rating: m.vote_average,
-            content_rating: getTmdbRating(m.releases),
-            genres: m.genres?.map(g => g.name) || [],
-            roles: m.credits?.cast?.slice(0, 10).map(c => ({ name: c.name, role: c.character, thumb: c.profile_path ? `https://image.tmdb.org/t/p/w200${c.profile_path}` : null })) || [],
-            directors: m.credits?.crew?.filter(c => c.job === 'Director').map(d => ({ name: d.name })) || []
-          };
-          
-          return json({ metadata });
+          return json({
+             metadata: {
+                id: id,
+                title: m.title,
+                original_title: m.original_title,
+                year: m.release_date ? parseInt(m.release_date.split('-')[0]) : null,
+                originally_available_at: m.release_date,
+                summary: m.overview,
+                studio: m.production_companies?.[0]?.name,
+                poster: m.poster_path ? `https://image.tmdb.org/t/p/original${m.poster_path}` : null,
+                art: m.backdrop_path ? `https://image.tmdb.org/t/p/original${m.backdrop_path}` : null,
+                rating: m.vote_average,
+                content_rating: getTmdbRating(m.releases),
+                genres: m.genres?.map(g => g.name) || [],
+                roles: m.credits?.cast?.slice(0, 10).map(c => ({ 
+                  name: c.name, 
+                  role: c.character, 
+                  thumb: c.profile_path ? `https://image.tmdb.org/t/p/w200${c.profile_path}` : null 
+                })) || [],
+                directors: m.credits?.crew?.filter(c => c.job === 'Director').map(d => ({ name: d.name })) || []
+             }
+          });
         }
 
-        // --- FETCH ALBUM DETAILS (Spotify) ---
+        // --- 🎵 FETCH ALBUM DETAILS (Spotify) ---
         if (id.startsWith('spotify-album-')) {
           const spotifyId = id.replace('spotify-album-', '');
           const token = await getSpotifyToken(env);
@@ -127,46 +176,45 @@ export default {
           });
           const a = await spotRes.json();
 
-          const metadata = {
-            id: id,
-            title: a.name,
-            artist: a.artists[0]?.name,
-            year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
-            originally_available_at: a.release_date,
-            summary: `Album by ${a.artists[0]?.name} with ${a.total_tracks} tracks.`,
-            poster: a.images[0]?.url,
-            tracks: a.tracks?.items?.map((t, index) => ({
-              index: index + 1,
-              title: t.name,
-              duration: t.duration_ms
-            })) || []
-          };
-
-          return json({ metadata });
+          return json({
+             metadata: {
+                id: id,
+                title: a.name,
+                artist: a.artists[0]?.name,
+                year: a.release_date ? parseInt(a.release_date.split('-')[0]) : null,
+                originally_available_at: a.release_date,
+                summary: `Album by ${a.artists[0]?.name} with ${a.total_tracks} tracks.`,
+                poster: a.images[0]?.url,
+                tracks: a.tracks?.items?.map((t, index) => ({
+                  index: index + 1,
+                  title: t.name,
+                  duration: t.duration_ms
+                })) || []
+             }
+          });
         }
 
-        // --- FETCH BOOK DETAILS (Google Books) ---
+        // --- 📖 FETCH BOOK DETAILS (Google Books) ---
         if (id.startsWith('google-book-')) {
           const bookId = id.replace('google-book-', '');
           const bookRes = await fetch(`https://www.googleapis.com/books/v1/volumes/${bookId}?key=${env.GOOGLE_BOOKS_API_KEY}`);
           const b = await bookRes.json();
           const info = b.volumeInfo;
 
-          const metadata = {
-            id: id,
-            title: info.title,
-            artist: info.authors ? info.authors[0] : 'Unknown', // Maps to Artist
-            year: info.publishedDate ? parseInt(info.publishedDate.split('-')[0]) : null,
-            originally_available_at: info.publishedDate,
-            summary: info.description ? info.description.replace(/<[^>]*>?/gm, '') : '', // Strip HTML from Google Books desc
-            poster: info.imageLinks?.thumbnail?.replace('http://', 'https://'), // Force HTTPS
-            studio: info.publisher,
-            genres: info.categories || [],
-            // Google Books doesn't give tracks, so we just return metadata
-            tracks: [] 
-          };
-
-          return json({ metadata });
+          return json({
+             metadata: {
+                id: id,
+                title: info.title,
+                artist: info.authors ? info.authors[0] : 'Unknown', 
+                year: info.publishedDate ? parseInt(info.publishedDate.split('-')[0]) : null,
+                originally_available_at: info.publishedDate,
+                summary: info.description ? info.description.replace(/<[^>]*>?/gm, '') : '',
+                poster: info.imageLinks?.thumbnail?.replace('http://', 'https://'),
+                studio: info.publisher,
+                genres: info.categories || [],
+                tracks: [] 
+             }
+          });
         }
 
         return json({ error: "Unknown ID format" }, 404);
