@@ -19,11 +19,11 @@ export default {
       return json({
         MediaContainer: {
           size: 0,
-          // CRITICAL FIX: Must use the official system identifier format
-          identifier: "tv.plex.provider.metadata", 
+          // CHANGE: 'identifier' -> 'providerId'
+          // CHANGE: Use a unique ID, NOT 'tv.plex.provider.metadata'
+          providerId: "com.pleiades.metadata", 
           title: "Pleiades Metadata",
           version: "1.0.0",
-          protocols: "stream", 
           types: "movie,show,artist,album", 
           Feature: [
             { type: "search" },
@@ -48,7 +48,7 @@ export default {
             MediaContainer: { 
               size: 0, 
               totalSize: 0,
-              identifier: "tv.plex.provider.metadata", 
+              providerId: "com.pleiades.metadata", 
               Metadata: [] 
             } 
           });
@@ -116,7 +116,7 @@ export default {
           MediaContainer: {
             size: matches.length,
             totalSize: matches.length,
-            identifier: "tv.plex.provider.metadata",
+            providerId: "com.pleiades.metadata",
             Metadata: matches
           }
         });
@@ -169,7 +169,7 @@ export default {
             MediaContainer: {
               size: 1,
               totalSize: 1,
-              identifier: "tv.plex.provider.metadata",
+              providerId: "com.pleiades.metadata",
               Metadata: [ meta ]
             }
           });
@@ -179,7 +179,7 @@ export default {
           MediaContainer: { 
             size: 0, 
             totalSize: 0,
-            identifier: "tv.plex.provider.metadata", 
+            providerId: "com.pleiades.metadata", 
             Metadata: [] 
           } 
         });
@@ -194,7 +194,7 @@ export default {
 };
 
 // =================================================================================
-// 🛠️ HELPERS
+// 🛠️ HELPERS (Formatting logic)
 // =================================================================================
 
 function formatTmdbMovie(m, guid) {
