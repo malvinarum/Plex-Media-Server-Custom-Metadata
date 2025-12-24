@@ -15,21 +15,30 @@ export default {
 
     try {
       // =================================================================================
+      // 🏥 HEALTH CHECK (New)
+      // =================================================================================
+      // Fixes "URL Not Reachable" by responding to the root ping
+      if (path === '/') {
+        return json({ status: "online", agent: "Plex Custom Metadata", version: "1.0.0" });
+      }
+
+      // =================================================================================
       // 🎬 PLEX META AGENT ROUTES
       // =================================================================================
 
-      // 1. SEARCH: Plex asks "What matches 'The Office'?"
-      if (path === '/plex/search') {
+      // 1. SEARCH
+      // Endpoint: /search?query=Name...
+      // Removed '/plex' prefix to work with custom domains
+      if (path === '/search' || path === '/plex/search') {
         const query = params.get('query');
         const year = params.get('year');
-        const type = params.get('type'); // 'movie', 'show', 'artist', 'album'
+        const type = params.get('type'); 
 
         if (!query) return json({ error: "Missing query" }, 400);
 
         let matches = [];
 
         // --- 📺 SEARCH TV SHOWS (TMDB) ---
-        // Added this block back so TV libraries work
         if (type === 'show' || type === 'tv') {
            const tmdbRes = await fetch(`https://api.themoviedb.org/3/search/tv?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&include_adult=false&year=${year || ''}`);
            const data = await tmdbRes.json();
@@ -78,7 +87,6 @@ export default {
           }
 
           // 2. Try Google Books (For Audiobooks)
-          // We search if the type is album/book, appending results
           const booksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&key=${env.GOOGLE_BOOKS_API_KEY}&maxResults=3`);
           const bookData = await booksRes.json();
 
@@ -89,7 +97,7 @@ export default {
                title: info.title,
                year: info.publishedDate ? parseInt(info.publishedDate.split('-')[0]) : null,
                thumb: info.imageLinks?.thumbnail?.replace('http://', 'https://'),
-               type: 'album', // Masquerade as album for Plex
+               type: 'album',
                artist: info.authors ? info.authors[0] : 'Unknown Author'
              };
           }));
@@ -98,8 +106,9 @@ export default {
         return json({ media: matches });
       }
 
-      // 2. METADATA: Plex asks "Give me details for ID 'tmdb-show-99'"
-      if (path === '/plex/metadata') {
+      // 2. METADATA
+      // Endpoint: /metadata?id=...
+      if (path === '/metadata' || path === '/plex/metadata') {
         const id = params.get('id');
         if (!id) return json({ error: "Missing ID" }, 400);
 
@@ -108,8 +117,6 @@ export default {
           const tmdbId = id.replace('tmdb-show-', '');
           const tmdbRes = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${env.TMDB_API_KEY}&append_to_response=credits,content_ratings`);
           const s = await tmdbRes.json();
-
-          // Helper to get TV rating (e.g. TV-MA)
           const rating = s.content_ratings?.results?.find(r => r.iso_3166_1 === 'US')?.rating;
 
           return json({
